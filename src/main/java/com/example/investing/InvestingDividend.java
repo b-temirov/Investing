@@ -41,6 +41,7 @@ public final class InvestingDividend implements AutoCloseable {
     private static final List<String> CSV_HEADERS = List.of(
             "Ex-Dividend Date", "Dividend", "Type", "Payment Date", "Yield"
     );
+    private static final String FIRST_HEADER_CANONICAL = "exdividenddate";
     private static final Set<String> REQUIRED_HEADERS = Set.of(
             "exdividenddate", "dividend", "type", "paymentdate", "yield"
     );
@@ -75,7 +76,7 @@ public final class InvestingDividend implements AutoCloseable {
                 return;
             }
 
-            WebElement liveTable = crawler.scrollUntilTableFound(initialDoc);
+            WebElement liveTable = crawler.scrollUntilTableFound();
             crawler.saveTableAsCsv(liveTable, outputPath);
             System.out.println("Saved CSV to " + outputPath.toAbsolutePath());
         }
@@ -204,17 +205,18 @@ public final class InvestingDividend implements AutoCloseable {
         return null;
     }
 
-    public WebElement scrollUntilTableFound(Document initialDoc) {
+    public WebElement scrollUntilTableFound() {
         driver.get(TARGET_URL);
         waitUntilPageReady();
         acceptCookiesIfPresent();
 
         long lastOffset = -1L;
         int stagnantScrolls = 0;
+        int[] rowState = {0, 0};
 
         for (int i = 0; i < MAX_SCROLL_ATTEMPTS; i++) {
             WebElement table = findDividentTable();
-            if (hasDataRows(table)) {
+            if (hasStableRowCount(table, rowState)) {
                 return table;
             }
 
@@ -234,7 +236,7 @@ public final class InvestingDividend implements AutoCloseable {
                 new WebDriverWait(driver, SHORT_WAIT_TIMEOUT)
                         .until(d -> hasDataRows(findDividentTable()));
                 table = findDividentTable();
-                if (hasDataRows(table)) {
+                if (hasStableRowCount(table, rowState)) {
                     return table;
                 }
             } catch (TimeoutException ignored) {
@@ -339,6 +341,41 @@ public final class InvestingDividend implements AutoCloseable {
                 || !table.findElements(By.cssSelector("tr td")).isEmpty();
     }
 
+    private boolean hasStableRowCount(WebElement table, int[] rowState) {
+        if (!hasDataRows(table)) {
+            return false;
+        }
+
+        int currentRowCount = countDataRows(table);
+        if (currentRowCount > rowState[0]) {
+            rowState[0] = currentRowCount;
+            rowState[1] = 0;
+        } else {
+            rowState[1]++;
+        }
+
+        return rowState[1] >= MAX_STAGNANT_SCROLLS;
+    }
+
+    private int countDataRows(WebElement table) {
+        if (table == null) {
+            return 0;
+        }
+
+        List<WebElement> rowElements = table.findElements(By.cssSelector("tbody tr"));
+        if (rowElements.isEmpty()) {
+            rowElements = table.findElements(By.cssSelector("tr"));
+        }
+
+        int count = 0;
+        for (WebElement row : rowElements) {
+            if (row.findElements(By.cssSelector("td")).size() >= CSV_HEADERS.size()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     private boolean hasDataRows(Element table) {
         if (table == null) {
             return false;
@@ -391,7 +428,7 @@ public final class InvestingDividend implements AutoCloseable {
                     .map(this::normalize)
                     .toList();
 
-            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(canonicalHeader(CSV_HEADERS.get(0)))) {
+            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(FIRST_HEADER_CANONICAL)) {
                 continue;
             }
 
@@ -422,7 +459,7 @@ public final class InvestingDividend implements AutoCloseable {
                     .map(this::normalize)
                     .toList();
 
-            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(canonicalHeader(CSV_HEADERS.get(0)))) {
+            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(FIRST_HEADER_CANONICAL)) {
                 continue;
             }
 
