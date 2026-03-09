@@ -17,6 +17,128 @@ This guide assumes:
 - you can access the internet from that machine
 - you will clone the project from GitHub
 
+## Optional: install Visual Studio Code on CentOS Stream 9
+
+If you want to inspect or edit the project directly on the CentOS machine, you can install Visual Studio Code there as well.
+
+There are two common approaches:
+
+- install VS Code from Microsoft's RPM repository
+- install VS Code via Flatpak
+
+The Microsoft repository approach is usually the most direct one.
+
+### Option A: install VS Code from the Microsoft RPM repository
+
+First import the Microsoft signing key:
+
+```bash
+sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+```
+
+Then add the VS Code repository:
+
+```bash
+sudo sh -c 'cat > /etc/yum.repos.d/vscode.repo <<EOF
+[code]
+name=Visual Studio Code
+baseurl=https://packages.microsoft.com/yumrepos/vscode
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.microsoft.com/keys/microsoft.asc
+EOF'
+```
+
+After that, refresh package metadata:
+
+```bash
+sudo dnf check-update
+```
+
+Then install VS Code:
+
+```bash
+sudo dnf install -y code
+```
+
+Verify installation:
+
+```bash
+code --version
+```
+
+If you are on a graphical CentOS session, you can open VS Code with:
+
+```bash
+code
+```
+
+If you want to open the current project folder:
+
+```bash
+code .
+```
+
+### Option B: install VS Code through Flatpak
+
+If the Microsoft RPM repository path is not suitable for your environment, you can use Flatpak.
+
+First install Flatpak:
+
+```bash
+sudo dnf install -y flatpak
+```
+
+Add the Flathub repository:
+
+```bash
+sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+```
+
+Install VS Code:
+
+```bash
+flatpak install -y flathub com.visualstudio.code
+```
+
+Run it:
+
+```bash
+flatpak run com.visualstudio.code
+```
+
+### Which method should you use?
+
+Use the Microsoft RPM repository if:
+
+- you want the standard Linux package installation path
+- you prefer `code` to be available directly as a normal shell command
+
+Use Flatpak if:
+
+- your environment already uses Flatpak heavily
+- repository policy or packaging constraints make the RPM path inconvenient
+
+### Notes about running VS Code on CentOS
+
+- VS Code requires a graphical desktop session to open normally.
+- If your CentOS machine is server-only and has no desktop environment, you typically would not run the GUI directly there.
+- In a server-only environment, a more common pattern is to:
+  - edit locally on your Mac
+  - push to GitHub
+  - pull and run on CentOS
+
+Or:
+
+- install VS Code locally
+- use Remote SSH from VS Code to work on the CentOS machine
+
+If you plan to use VS Code Remote SSH, make sure:
+
+- the CentOS machine has SSH enabled
+- your user can log in over SSH
+- Git, Java, Maven, Chromium, and ChromeDriver are still installed on the CentOS machine
+
 ## 1. What must exist on the CentOS machine
 
 Before the project can run, the machine needs:
