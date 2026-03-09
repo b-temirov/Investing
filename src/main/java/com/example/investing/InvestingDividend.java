@@ -1,12 +1,12 @@
 package com.example.investing;
 
-import org.jsoup.Jsoup;
 import org.jsoup.HttpStatusException;
+import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebDriverException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -29,14 +30,17 @@ public final class InvestingDividend implements AutoCloseable {
 
     private static final String TARGET_URL =
             "https://www.investing.com/equities/apple-computer-inc-dividends";
-    private static final Path OUTPUT_CSV = Path.of("dividends.csv");
-    private static final Duration PAGE_READY_TIMEOUT = Duration.ofSeconds(15);
+    private static final Path DEFAULT_OUTPUT_CSV = Path.of("dividends.csv");
+    private static final Duration PAGE_READY_TIMEOUT = Duration.ofSeconds(25);
     private static final Duration SHORT_WAIT_TIMEOUT = Duration.ofSeconds(2);
 
-    private static final int MAX_SCROLL_ATTEMPTS = 10;
+    private static final int MAX_SCROLL_ATTEMPTS = 30;
     private static final int SCROLL_STEP_PX = 550;
     private static final int MAX_STAGNANT_SCROLLS = 3;
 
+    private static final List<String> CSV_HEADERS = List.of(
+            "Ex-Dividend Date", "Dividend", "Type", "Payment Date", "Yield"
+    );
     private static final Set<String> REQUIRED_HEADERS = Set.of(
             "exdividenddate", "dividend", "type", "paymentdate", "yield"
     );
@@ -49,7 +53,7 @@ public final class InvestingDividend implements AutoCloseable {
                     "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), 'accept')]")
     );
 
-    private final WebDriver driver;
+    private final ChromeDriver driver;
     private final WebDriverWait pageWait;
 
     public InvestingDividend(boolean headless) {
@@ -58,22 +62,59 @@ public final class InvestingDividend implements AutoCloseable {
     }
 
     public static void main(String[] args) throws IOException {
-        try (InvestingDividend crawler = new InvestingDividend(true)) {
+        boolean headless = resolveHeadless(args);
+        Path outputPath = resolveOutputPath(args);
+
+        try (InvestingDividend crawler = new InvestingDividend(headless)) {
             Document initialDoc = crawler.fetchInitialDocument();
-            Element table = crawler.scrollUntilTableFound(initialDoc);
-            if (table == null) {
-                throw new IllegalStateException("Dividend table was not found.");
+            Element initialTable = crawler.findDividentTable(initialDoc);
+
+            if (crawler.hasDataRows(initialTable)) {
+                crawler.saveTableAsCsv(initialTable, outputPath);
+                System.out.println("Saved CSV to " + outputPath.toAbsolutePath());
+                return;
             }
-            crawler.saveTableAsCsv(table, OUTPUT_CSV);
-            System.out.println("Saved CSV to " + OUTPUT_CSV.toAbsolutePath());
+
+            WebElement liveTable = crawler.scrollUntilTableFound(initialDoc);
+            crawler.saveTableAsCsv(liveTable, outputPath);
+            System.out.println("Saved CSV to " + outputPath.toAbsolutePath());
         }
+    }
+
+    private static boolean resolveHeadless(String[] args) {
+        for (String arg : args) {
+            if ("--headless".equals(arg)) {
+                return true;
+            }
+            if ("--no-headless".equals(arg)) {
+                return false;
+            }
+        }
+
+        String configured = System.getenv("HEADLESS");
+        if (configured != null && !configured.isBlank()) {
+            return Boolean.parseBoolean(configured);
+        }
+
+        return System.getenv("DISPLAY") == null || System.getenv("DISPLAY").isBlank();
+    }
+
+    private static Path resolveOutputPath(String[] args) {
+        for (int i = 0; i < args.length; i++) {
+            if ("--output".equals(args[i]) && i + 1 < args.length) {
+                return Path.of(args[i + 1]);
+            }
+            if (args[i].startsWith("--output=")) {
+                return Path.of(args[i].substring("--output=".length()));
+            }
+        }
+        return DEFAULT_OUTPUT_CSV;
     }
 
     private Document fetchInitialDocument() throws IOException {
         try {
             return Jsoup.connect(TARGET_URL)
-                    .userAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-                            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    .userAgent(chromeUserAgent())
                     .referrer("https://www.google.com/")
                     .header("Accept-Language", "en-US,en;q=0.9")
                     .header("Accept",
@@ -89,7 +130,7 @@ public final class InvestingDividend implements AutoCloseable {
         }
     }
 
-    private WebDriver buildChromiumDriver(boolean headless) {
+    private ChromeDriver buildChromiumDriver(boolean headless) {
         configureChromeDriverPath();
 
         ChromeOptions options = new ChromeOptions();
@@ -100,15 +141,26 @@ public final class InvestingDividend implements AutoCloseable {
         options.addArguments(
                 "--window-size=1920,1200",
                 "--no-sandbox",
-                "--disable-dev-shm-usage",
                 "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
                 "--lang=en-US"
         );
-        options.addArguments(
-                "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        );
-        return new ChromeDriver(options);
+        options.addArguments("--user-agent=" + chromeUserAgent());
+        options.setExperimentalOption("excludeSwitches", List.of("enable-automation"));
+        options.setExperimentalOption("useAutomationExtension", false);
+
+        ChromeDriver chromeDriver = new ChromeDriver(options);
+        try {
+            chromeDriver.executeCdpCommand(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    Map.of("source",
+                            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            );
+        } catch (WebDriverException ignored) {
+            // Non-fatal; keep the browser session if CDP tweaking is unavailable.
+        }
+        return chromeDriver;
     }
 
     private void configureChromeDriverPath() {
@@ -152,13 +204,7 @@ public final class InvestingDividend implements AutoCloseable {
         return null;
     }
 
-    // Drop-in replacement for: Element table = findDividentTable(doc);
-    public Element scrollUntilTableFound(Document initialDoc) {
-        Element table = findDividentTable(initialDoc);
-        if (hasDataRows(table)) {
-            return table;
-        }
-
+    public WebElement scrollUntilTableFound(Document initialDoc) {
         driver.get(TARGET_URL);
         waitUntilPageReady();
         acceptCookiesIfPresent();
@@ -167,8 +213,7 @@ public final class InvestingDividend implements AutoCloseable {
         int stagnantScrolls = 0;
 
         for (int i = 0; i < MAX_SCROLL_ATTEMPTS; i++) {
-            Document renderedDoc = Jsoup.parse(driver.getPageSource());
-            table = findDividentTable(renderedDoc); // calls your old finder
+            WebElement table = findDividentTable();
             if (hasDataRows(table)) {
                 return table;
             }
@@ -179,10 +224,21 @@ public final class InvestingDividend implements AutoCloseable {
             );
 
             try {
-                Thread.sleep(350); // minimal fallback pause
+                Thread.sleep(350);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IllegalStateException("Interrupted during scroll loop", e);
+            }
+
+            try {
+                new WebDriverWait(driver, SHORT_WAIT_TIMEOUT)
+                        .until(d -> hasDataRows(findDividentTable()));
+                table = findDividentTable();
+                if (hasDataRows(table)) {
+                    return table;
+                }
+            } catch (TimeoutException ignored) {
+                // Continue the controlled scroll loop.
             }
 
             acceptCookiesIfPresent();
@@ -215,32 +271,30 @@ public final class InvestingDividend implements AutoCloseable {
                 WebElement button = new WebDriverWait(driver, SHORT_WAIT_TIMEOUT)
                         .until(ExpectedConditions.elementToBeClickable(selector));
                 button.click();
+                Thread.sleep(250);
                 return;
             } catch (WebDriverException ignored) {
-                // try next selector
+                // Try the next selector.
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
     }
 
-    // Keep your old name/signature for minimal refactor.
+    private WebElement findDividentTable() {
+        for (WebElement table : driver.findElements(By.tagName("table"))) {
+            if (hasRequiredHeaders(table)) {
+                return table;
+            }
+        }
+        return null;
+    }
+
     private Element findDividentTable(Document doc) {
         if (doc == null) {
             return null;
         }
-
-        // keep your existing selectors here
-        Element table = doc.selectFirst("div.mt-6 table");
-        if (table != null) return table;
-
-        table = doc.selectFirst("table.freeze-column-w-1");
-        if (table != null) return table;
-
-        table = doc.selectFirst(
-                "table:has(th:matchesOwn((?i)Ex-Dividend Date))" +
-                ":has(th:matchesOwn((?i)Payment Date))" +
-                ":has(th:matchesOwn((?i)Yield))"
-        );
-        if (table != null) return table;
 
         for (Element candidate : doc.select("table")) {
             if (hasRequiredHeaders(candidate)) {
@@ -250,8 +304,24 @@ public final class InvestingDividend implements AutoCloseable {
         return null;
     }
 
+    private boolean hasRequiredHeaders(WebElement table) {
+        if (table == null) {
+            return false;
+        }
+
+        Set<String> headers = table.findElements(By.cssSelector("th")).stream()
+                .map(WebElement::getText)
+                .map(this::normalize)
+                .map(this::canonicalHeader)
+                .collect(Collectors.toSet());
+        return headers.containsAll(REQUIRED_HEADERS);
+    }
+
     private boolean hasRequiredHeaders(Element table) {
-        if (table == null) return false;
+        if (table == null) {
+            return false;
+        }
+
         Set<String> headers = table.select("th").stream()
                 .map(Element::text)
                 .map(this::normalize)
@@ -260,14 +330,33 @@ public final class InvestingDividend implements AutoCloseable {
         return headers.containsAll(REQUIRED_HEADERS);
     }
 
+    private boolean hasDataRows(WebElement table) {
+        if (table == null) {
+            return false;
+        }
+
+        return !table.findElements(By.cssSelector("tbody tr")).isEmpty()
+                || !table.findElements(By.cssSelector("tr td")).isEmpty();
+    }
+
     private boolean hasDataRows(Element table) {
-        if (table == null) return false;
+        if (table == null) {
+            return false;
+        }
+
         return !table.select("tbody tr").isEmpty() || table.select("tr:has(td)").size() > 0;
     }
 
+    private void saveTableAsCsv(WebElement table, Path outputPath) throws IOException {
+        saveRowsAsCsv(extractTableRows(table), outputPath);
+    }
+
     private void saveTableAsCsv(Element table, Path outputPath) throws IOException {
-        List<List<String>> rows = extractTableRows(table);
-        if (rows.isEmpty()) {
+        saveRowsAsCsv(extractTableRows(table), outputPath);
+    }
+
+    private void saveRowsAsCsv(List<List<String>> rows, Path outputPath) throws IOException {
+        if (rows.size() <= 1) {
             throw new IllegalStateException("No table data found to write to CSV.");
         }
 
@@ -281,40 +370,63 @@ public final class InvestingDividend implements AutoCloseable {
         Files.write(outputPath, csvLines, StandardCharsets.UTF_8);
     }
 
+    private List<List<String>> extractTableRows(WebElement table) {
+        List<List<String>> rows = new ArrayList<>();
+        rows.add(CSV_HEADERS);
+
+        List<WebElement> rowElements = table.findElements(By.cssSelector("tbody tr"));
+        if (rowElements.isEmpty()) {
+            rowElements = table.findElements(By.cssSelector("tr"));
+        }
+
+        for (WebElement row : rowElements) {
+            List<WebElement> cells = row.findElements(By.cssSelector("td"));
+            if (cells.size() < CSV_HEADERS.size()) {
+                continue;
+            }
+
+            List<String> values = cells.stream()
+                    .limit(CSV_HEADERS.size())
+                    .map(WebElement::getText)
+                    .map(this::normalize)
+                    .toList();
+
+            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(canonicalHeader(CSV_HEADERS.get(0)))) {
+                continue;
+            }
+
+            rows.add(values);
+        }
+
+        return rows;
+    }
+
     private List<List<String>> extractTableRows(Element table) {
         List<List<String>> rows = new ArrayList<>();
+        rows.add(CSV_HEADERS);
 
-        List<String> headers = table.select("thead tr th").stream()
-                .map(Element::text)
-                .map(this::normalize)
-                .filter(text -> !text.isEmpty())
-                .toList();
-        if (!headers.isEmpty()) {
-            rows.add(headers);
+        List<Element> rowElements = table.select("tbody tr");
+        if (rowElements.isEmpty()) {
+            rowElements = table.select("tr");
         }
 
-        for (Element row : table.select("tbody tr")) {
-            List<String> cells = row.select("th, td").stream()
+        for (Element row : rowElements) {
+            List<Element> cells = row.select("td");
+            if (cells.size() < CSV_HEADERS.size()) {
+                continue;
+            }
+
+            List<String> values = cells.stream()
+                    .limit(CSV_HEADERS.size())
                     .map(Element::text)
                     .map(this::normalize)
-                    .filter(text -> !text.isEmpty())
                     .toList();
-            if (!cells.isEmpty()) {
-                rows.add(cells);
-            }
-        }
 
-        if (rows.isEmpty()) {
-            for (Element row : table.select("tr")) {
-                List<String> cells = row.select("th, td").stream()
-                        .map(Element::text)
-                        .map(this::normalize)
-                        .filter(text -> !text.isEmpty())
-                        .toList();
-                if (!cells.isEmpty()) {
-                    rows.add(cells);
-                }
+            if (values.get(0).isEmpty() || canonicalHeader(values.get(0)).equals(canonicalHeader(CSV_HEADERS.get(0)))) {
+                continue;
             }
+
+            rows.add(values);
         }
 
         return rows;
@@ -331,6 +443,11 @@ public final class InvestingDividend implements AutoCloseable {
 
     private String canonicalHeader(String value) {
         return normalize(value).toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    private String chromeUserAgent() {
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     }
 
     @Override
