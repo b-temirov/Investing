@@ -1,6 +1,7 @@
 package com.example.investing;
 
 import org.jsoup.Jsoup;
+import org.jsoup.HttpStatusException;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.openqa.selenium.By;
@@ -57,18 +58,34 @@ public final class InvestingDividend implements AutoCloseable {
     }
 
     public static void main(String[] args) throws IOException {
-        Document initialDoc = Jsoup.connect(TARGET_URL)
-                .userAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-                .get();
-
         try (InvestingDividend crawler = new InvestingDividend(true)) {
+            Document initialDoc = crawler.fetchInitialDocument();
             Element table = crawler.scrollUntilTableFound(initialDoc);
             if (table == null) {
                 throw new IllegalStateException("Dividend table was not found.");
             }
             crawler.saveTableAsCsv(table, OUTPUT_CSV);
             System.out.println("Saved CSV to " + OUTPUT_CSV.toAbsolutePath());
+        }
+    }
+
+    private Document fetchInitialDocument() throws IOException {
+        try {
+            return Jsoup.connect(TARGET_URL)
+                    .userAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                    .referrer("https://www.google.com/")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Accept",
+                            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                    .timeout((int) PAGE_READY_TIMEOUT.toMillis())
+                    .get();
+        } catch (HttpStatusException e) {
+            if (e.getStatusCode() == 403) {
+                System.err.println("Direct Jsoup request was blocked with HTTP 403. Falling back to Selenium.");
+                return null;
+            }
+            throw e;
         }
     }
 
