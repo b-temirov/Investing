@@ -1,5 +1,6 @@
 package com.example.investing.api;
 
+import org.jsoup.HttpStatusException;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -22,6 +23,10 @@ public final class InvestingDividendApiDownloader {
 
     private static final String ENDPOINT_TEMPLATE =
             "https://endpoints.investing.com/dividends/v1/instruments/%s/dividends?limit=%d";
+    private static final String REQUEST_ORIGIN = "https://www.investing.com";
+    private static final String REQUEST_USER_AGENT =
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     private static final List<String> CSV_HEADERS = List.of(
             "Ex-Dividend Date", "Dividend", "Type", "Payment Date", "Yield"
     );
@@ -35,12 +40,8 @@ public final class InvestingDividendApiDownloader {
     public static Element download(String instrumentId, LocalDate startDate, LocalDate endDate) throws IOException {
         validateInputs(instrumentId, startDate, endDate);
 
-        String responseBody = Jsoup.connect(buildUrl(instrumentId, calculateQuarterLimit(startDate, endDate)))
-                .ignoreContentType(true)
-                .header("Accept", "application/json")
-                .timeout(30_000)
-                .execute()
-                .body();
+        String url = buildUrl(instrumentId, calculateQuarterLimit(startDate, endDate));
+        String responseBody = fetchDividendJson(url);
 
         List<DividendRecord> records = parseDividendRecords(responseBody).stream()
                 .filter(record -> !record.dividendDate().isBefore(startDate) && !record.dividendDate().isAfter(endDate))
@@ -106,6 +107,30 @@ public final class InvestingDividendApiDownloader {
 
     private static int quarterOf(LocalDate date) {
         return ((date.getMonthValue() - 1) / 3) + 1;
+    }
+
+    private static String fetchDividendJson(String url) throws IOException {
+        try {
+            return Jsoup.connect(url)
+                    .ignoreContentType(true)
+                    .userAgent(REQUEST_USER_AGENT)
+                    .referrer(REQUEST_ORIGIN + "/")
+                    .header("Origin", REQUEST_ORIGIN)
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .timeout(30_000)
+                    .execute()
+                    .body();
+        } catch (HttpStatusException e) {
+            if (e.getStatusCode() == 403) {
+                throw new IOException(
+                        "Endpoint request was rejected with HTTP 403. "
+                                + "The Investing endpoint is blocking this client request shape.",
+                        e
+                );
+            }
+            throw e;
+        }
     }
 
     private static List<DividendRecord> parseDividendRecords(String responseBody) {
