@@ -9,6 +9,7 @@
     <name>investing-dividend</name>
 
     <properties>
+        <exec.mainClass>com.example.investing.InvestingDividend</exec.mainClass>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
@@ -46,7 +47,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>com.example.investing.InvestingDividend</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                 </configuration>
             </plugin>
         </plugins>

@@ -1,4 +1,4 @@
-package com.example.investing;
+package com.example.investing.api;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -22,8 +22,6 @@ public final class InvestingDividendApiDownloader {
 
     private static final String ENDPOINT_TEMPLATE =
             "https://endpoints.investing.com/dividends/v1/instruments/%s/dividends?limit=%d";
-    private static final String DEFAULT_INSTRUMENT_ID = "6408";
-    private static final Path OUTPUT_CSV = Path.of("dividends-api.csv");
     private static final List<String> CSV_HEADERS = List.of(
             "Ex-Dividend Date", "Dividend", "Type", "Payment Date", "Yield"
     );
@@ -34,23 +32,10 @@ public final class InvestingDividendApiDownloader {
     private InvestingDividendApiDownloader() {
     }
 
-    public static void main(String[] args) throws IOException {
-        LocalDate startDate = LocalDate.of(2025, 1, 1);
-        LocalDate endDate = LocalDate.of(2026, 3, 12);
-
-        Element table = download(DEFAULT_INSTRUMENT_ID, startDate, endDate);
-        saveTableAsCsv(table, OUTPUT_CSV);
-
-        System.out.println("Saved CSV to " + OUTPUT_CSV.toAbsolutePath());
-        System.out.println("URL: " + buildUrl(DEFAULT_INSTRUMENT_ID, calculateQuarterLimit(startDate, endDate)));
-    }
-
     public static Element download(String instrumentId, LocalDate startDate, LocalDate endDate) throws IOException {
         validateInputs(instrumentId, startDate, endDate);
 
-        int calculatedLimit = calculateQuarterLimit(startDate, endDate);
-        String url = buildUrl(instrumentId, calculatedLimit);
-        String responseBody = Jsoup.connect(url)
+        String responseBody = Jsoup.connect(buildUrl(instrumentId, calculateQuarterLimit(startDate, endDate)))
                 .ignoreContentType(true)
                 .header("Accept", "application/json")
                 .timeout(30_000)
@@ -64,10 +49,53 @@ public final class InvestingDividendApiDownloader {
         return buildTable(records);
     }
 
+    public static String buildUrl(String instrumentId, int calculatedLimit) {
+        return ENDPOINT_TEMPLATE.formatted(instrumentId, calculatedLimit);
+    }
+
+    public static int calculateQuarterLimit(LocalDate startDate, LocalDate endDate) {
+        validateDateRange(startDate, endDate);
+
+        int startQuarter = quarterOf(startDate);
+        int endQuarter = quarterOf(endDate);
+        return ((endDate.getYear() - startDate.getYear()) * 4) + (endQuarter - startQuarter) + 1;
+    }
+
+    static void saveTableAsCsv(Element table, Path outputPath) throws IOException {
+        List<List<String>> rows = new ArrayList<>();
+        rows.add(CSV_HEADERS);
+
+        for (Element row : table.select("tbody tr")) {
+            List<String> values = row.select("td").stream()
+                    .limit(CSV_HEADERS.size())
+                    .map(Element::text)
+                    .toList();
+            if (!values.isEmpty()) {
+                rows.add(values);
+            }
+        }
+
+        if (rows.size() <= 1) {
+            throw new IllegalStateException("No dividend rows matched the requested date range.");
+        }
+
+        List<String> csvLines = rows.stream()
+                .map(row -> row.stream()
+                        .map(InvestingDividendApiDownloader::escapeCsv)
+                        .collect(Collectors.joining(",")))
+                .toList();
+
+        Files.write(outputPath, csvLines, StandardCharsets.UTF_8);
+    }
+
     private static void validateInputs(String instrumentId, LocalDate startDate, LocalDate endDate) {
         if (instrumentId == null || instrumentId.isBlank()) {
             throw new IllegalArgumentException("instrumentId must not be blank.");
         }
+        validateDateRange(startDate, endDate);
+    }
+
+    private static void validateDateRange(LocalDate startDate, LocalDate endDate) {
         if (startDate == null || endDate == null) {
             throw new IllegalArgumentException("startDate and endDate must not be null.");
         }
@@ -76,18 +104,8 @@ public final class InvestingDividendApiDownloader {
         }
     }
 
-    private static int calculateQuarterLimit(LocalDate startDate, LocalDate endDate) {
-        int startQuarter = quarterOf(startDate);
-        int endQuarter = quarterOf(endDate);
-        return ((endDate.getYear() - startDate.getYear()) * 4) + (endQuarter - startQuarter) + 1;
-    }
-
     private static int quarterOf(LocalDate date) {
         return ((date.getMonthValue() - 1) / 3) + 1;
-    }
-
-    private static String buildUrl(String instrumentId, int calculatedLimit) {
-        return ENDPOINT_TEMPLATE.formatted(instrumentId, calculatedLimit);
     }
 
     private static List<DividendRecord> parseDividendRecords(String responseBody) {
@@ -179,33 +197,6 @@ public final class InvestingDividendApiDownloader {
         }
 
         return table;
-    }
-
-    private static void saveTableAsCsv(Element table, Path outputPath) throws IOException {
-        List<List<String>> rows = new ArrayList<>();
-        rows.add(CSV_HEADERS);
-
-        for (Element row : table.select("tbody tr")) {
-            List<String> values = row.select("td").stream()
-                    .limit(CSV_HEADERS.size())
-                    .map(Element::text)
-                    .toList();
-            if (!values.isEmpty()) {
-                rows.add(values);
-            }
-        }
-
-        if (rows.size() <= 1) {
-            throw new IllegalStateException("No dividend rows matched the requested date range.");
-        }
-
-        List<String> csvLines = rows.stream()
-                .map(row -> row.stream()
-                        .map(InvestingDividendApiDownloader::escapeCsv)
-                        .collect(Collectors.joining(",")))
-                .toList();
-
-        Files.write(outputPath, csvLines, StandardCharsets.UTF_8);
     }
 
     private static String escapeCsv(String value) {
